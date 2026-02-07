@@ -178,21 +178,56 @@ export function findTileMapLayers(parsed) {
 }
 
 /**
+ * Resolve a single TileMapLayer from a list by name or path-qualified name.
+ * Supports:
+ *   - Simple name: "TileMapLayer_Base" (must be unique, errors if ambiguous)
+ *   - Path-qualified: "Dim_n1/TileMapLayer_Base" or "DimensionManager/Dim_n1/TileMapLayer_Base"
+ *     (matches against the tail of parent/name)
+ * @param {Array} layers – result of findTileMapLayers()
+ * @param {string} layerName – simple name or path-qualified name
+ * @returns {object} the matched layer
+ */
+export function resolveLayer(layers, layerName) {
+  // Path-qualified: match against "parent/name" suffix
+  if (layerName.includes('/')) {
+    const match = layers.find(l => {
+      const fullPath = l.parent ? `${l.parent}/${l.name}` : l.name;
+      return fullPath === layerName || fullPath.endsWith(`/${layerName}`);
+    });
+    if (!match) {
+      const available = layers.map(l => l.parent ? `${l.parent}/${l.name}` : l.name);
+      throw new Error(`Layer "${layerName}" not found. Available:\n  ${available.join('\n  ')}`);
+    }
+    return match;
+  }
+
+  // Simple name match
+  const matches = layers.filter(l => l.name === layerName);
+  if (matches.length === 0) {
+    const available = layers.map(l => l.parent ? `${l.parent}/${l.name}` : l.name);
+    throw new Error(`Layer "${layerName}" not found. Available:\n  ${available.join('\n  ')}`);
+  }
+  if (matches.length > 1) {
+    const paths = matches.map(l => l.parent ? `${l.parent}/${l.name}` : l.name);
+    throw new Error(
+      `Ambiguous layer name "${layerName}" matches ${matches.length} layers. Use full path:\n  ${paths.join('\n  ')}`
+    );
+  }
+  return matches[0];
+}
+
+/**
  * Surgically replace tile_map_data for a named TileMapLayer inside a .tscn file.
  * If the layer has no tile_map_data property yet, one is inserted after tile_set (or the header).
  * @param {string} filePath
- * @param {string} layerName
+ * @param {string} layerName – simple name or path-qualified name (e.g. "Dim_n1/TileMapLayer_Base")
  * @param {string} newBase64
  */
 export async function updateTileMapData(filePath, layerName, newBase64) {
   const text = await readFile(filePath, 'utf-8');
   const parsed = parseTscnText(text);
   const layers = findTileMapLayers(parsed);
-  const layer = layers.find(l => l.name === layerName);
-
-  if (!layer) {
-    throw new Error(`TileMapLayer "${layerName}" not found in ${filePath}`);
-  }
+  const layer = resolveLayer(layers, layerName);
 
   const lines = parsed.lines;
   const newLine = `tile_map_data = PackedByteArray("${newBase64}")`;

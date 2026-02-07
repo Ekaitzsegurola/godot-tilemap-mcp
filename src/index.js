@@ -19,7 +19,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { decodeTileData, encodeTileData } from './tileData.js';
-import { parseTscn, parseTscnText, findTileMapLayers, updateTileMapData, buildExtResourceMap } from './tscnParser.js';
+import { parseTscn, parseTscnText, findTileMapLayers, updateTileMapData, buildExtResourceMap, resolveLayer } from './tscnParser.js';
 import { parseTileSet } from './tresParser.js';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +89,8 @@ async function toolListTilemaps(args) {
       absolute_path: fp,
       layers: layers.map(l => ({
         name: l.name,
+        parent: l.parent || null,
+        full_path: l.parent ? `${l.parent}/${l.name}` : l.name,
         tile_count: l.tileMapDataB64 ? decodeTileData(l.tileMapDataB64).length : 0,
         has_data: !!l.tileMapDataB64,
         tileset_ref: l.tileSetRef || null,
@@ -112,10 +114,11 @@ async function toolGetTilemapInfo(args) {
   const layers = findTileMapLayers(parsed);
   const layerFilter = args.layer_name;
 
-  const result = [];
-  for (const l of layers) {
-    if (layerFilter && l.name !== layerFilter) continue;
+  // If a filter is given, try resolveLayer first (supports path-qualified names)
+  const filteredLayers = layerFilter ? [resolveLayer(layers, layerFilter)] : layers;
 
+  const result = [];
+  for (const l of filteredLayers) {
     const cells = l.tileMapDataB64 ? decodeTileData(l.tileMapDataB64) : [];
     let bounds = null;
     if (cells.length > 0) {
@@ -131,6 +134,8 @@ async function toolGetTilemapInfo(args) {
 
     result.push({
       name: l.name,
+      parent: l.parent || null,
+      full_path: l.parent ? `${l.parent}/${l.name}` : l.name,
       tile_count: cells.length,
       bounds,
       tileset_ref: l.tileSetRef || null,
@@ -148,9 +153,7 @@ async function toolReadTiles(args) {
   const fp = resolvePath(args.scene_path);
   const parsed = await parseTscn(fp);
   const layers = findTileMapLayers(parsed);
-  const layer = layers.find(l => l.name === args.layer_name);
-
-  if (!layer) throw new Error(`Layer "${args.layer_name}" not found. Available: ${layers.map(l => l.name).join(', ')}`);
+  const layer = resolveLayer(layers, args.layer_name);
 
   let cells = layer.tileMapDataB64 ? decodeTileData(layer.tileMapDataB64) : [];
 
@@ -170,9 +173,7 @@ async function toolRenderTilemap(args) {
   const fp = resolvePath(args.scene_path);
   const parsed = await parseTscn(fp);
   const layers = findTileMapLayers(parsed);
-  const layer = layers.find(l => l.name === args.layer_name);
-
-  if (!layer) throw new Error(`Layer "${args.layer_name}" not found. Available: ${layers.map(l => l.name).join(', ')}`);
+  const layer = resolveLayer(layers, args.layer_name);
 
   let cells = layer.tileMapDataB64 ? decodeTileData(layer.tileMapDataB64) : [];
   if (cells.length === 0) return { render: '(empty layer)', bounds: null };
@@ -259,9 +260,7 @@ async function toolSetTiles(args) {
   const fp = resolvePath(args.scene_path);
   const parsed = await parseTscn(fp);
   const layers = findTileMapLayers(parsed);
-  const layer = layers.find(l => l.name === args.layer_name);
-
-  if (!layer) throw new Error(`Layer "${args.layer_name}" not found. Available: ${layers.map(l => l.name).join(', ')}`);
+  const layer = resolveLayer(layers, args.layer_name);
 
   // Decode existing
   const existing = layer.tileMapDataB64 ? decodeTileData(layer.tileMapDataB64) : [];
@@ -296,9 +295,7 @@ async function toolFillRect(args) {
   const fp = resolvePath(args.scene_path);
   const parsed = await parseTscn(fp);
   const layers = findTileMapLayers(parsed);
-  const layer = layers.find(l => l.name === args.layer_name);
-
-  if (!layer) throw new Error(`Layer "${args.layer_name}" not found. Available: ${layers.map(l => l.name).join(', ')}`);
+  const layer = resolveLayer(layers, args.layer_name);
 
   const existing = layer.tileMapDataB64 ? decodeTileData(layer.tileMapDataB64) : [];
   const cellMap = new Map();
@@ -331,9 +328,7 @@ async function toolEraseTiles(args) {
   const fp = resolvePath(args.scene_path);
   const parsed = await parseTscn(fp);
   const layers = findTileMapLayers(parsed);
-  const layer = layers.find(l => l.name === args.layer_name);
-
-  if (!layer) throw new Error(`Layer "${args.layer_name}" not found. Available: ${layers.map(l => l.name).join(', ')}`);
+  const layer = resolveLayer(layers, args.layer_name);
 
   const existing = layer.tileMapDataB64 ? decodeTileData(layer.tileMapDataB64) : [];
   const toErase = new Set((args.positions || []).map(p => `${p.x},${p.y}`));
@@ -349,9 +344,7 @@ async function toolEraseRect(args) {
   const fp = resolvePath(args.scene_path);
   const parsed = await parseTscn(fp);
   const layers = findTileMapLayers(parsed);
-  const layer = layers.find(l => l.name === args.layer_name);
-
-  if (!layer) throw new Error(`Layer "${args.layer_name}" not found. Available: ${layers.map(l => l.name).join(', ')}`);
+  const layer = resolveLayer(layers, args.layer_name);
 
   const existing = layer.tileMapDataB64 ? decodeTileData(layer.tileMapDataB64) : [];
   const remaining = existing.filter(c =>
@@ -409,7 +402,7 @@ const TOOL_DEFINITIONS = [
         },
         layer_name: {
           type: 'string',
-          description: 'Optional: filter to a specific layer name.',
+          description: 'Optional: filter to a specific layer name. Use path-qualified name (e.g. "Dim_n1/TileMapLayer_Base") to target a specific dimension when names are duplicated across dimensions.',
         },
       },
       required: ['scene_path'],
@@ -422,7 +415,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
-        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node. Use path-qualified name (e.g. "Dim_n1/TileMapLayer_Base") to target a specific dimension.' },
         region: {
           type: 'object',
           description: 'Optional rectangular region filter.',
@@ -445,7 +438,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
-        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node. Use path-qualified name (e.g. "Dim_n1/TileMapLayer_Base") to target a specific dimension.' },
         mode: {
           type: 'string',
           enum: ['source', 'atlas'],
@@ -473,7 +466,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
-        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node. Use path-qualified name (e.g. "Dim_n1/TileMapLayer_Base") to target a specific dimension.' },
         tiles: {
           type: 'array',
           description: 'Array of tiles to set.',
@@ -501,7 +494,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
-        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node. Use path-qualified name (e.g. "Dim_n1/TileMapLayer_Base") to target a specific dimension.' },
         x: { type: 'integer', description: 'Left edge (cell X).' },
         y: { type: 'integer', description: 'Top edge (cell Y).' },
         width: { type: 'integer', description: 'Width in cells.' },
@@ -521,7 +514,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
-        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node. Use path-qualified name (e.g. "Dim_n1/TileMapLayer_Base") to target a specific dimension.' },
         positions: {
           type: 'array',
           description: 'Positions to erase.',
@@ -545,7 +538,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
-        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node. Use path-qualified name (e.g. "Dim_n1/TileMapLayer_Base") to target a specific dimension.' },
         x: { type: 'integer', description: 'Left edge (cell X).' },
         y: { type: 'integer', description: 'Top edge (cell Y).' },
         width: { type: 'integer', description: 'Width in cells.' },
