@@ -25,6 +25,10 @@ All notable changes to this project are documented here.
 - Runtime baseline is Node.js 22.
 - MCP SDK upgraded from the early 0.x API to the current 1.x high-level server API.
 
+### Fixed
+
+- Headless terrain previews no longer pass the editor-only `--recovery-mode` flag, restoring compatibility with Godot 4.5.
+
 ### Compatibility
 
 - All v1 MCP tool names remain registered.

@@ -77,7 +77,6 @@ export class GodotBridge implements TerrainBridge {
         "--headless",
         "--quiet",
         "--no-header",
-        "--recovery-mode",
         "--path",
         projectPath,
         "--script",
