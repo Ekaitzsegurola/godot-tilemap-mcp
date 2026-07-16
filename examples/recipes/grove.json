@@ -1,0 +1,20 @@
+{
+  "scenePath": "res://Scenes/World.tscn",
+  "seed": "small-grove-v1",
+  "operations": [
+    {
+      "op": "fill",
+      "layer": "World/Ground",
+      "shape": { "kind": "ellipse", "x": 8, "y": 6, "width": 15, "height": 11 },
+      "tile": { "brush": "meadow" }
+    },
+    {
+      "op": "scatter",
+      "layer": "World/Details",
+      "region": { "x": 9, "y": 7, "width": 13, "height": 9 },
+      "density": 0.12,
+      "minDistance": 2,
+      "tile": { "alias": "flower_blue" }
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Ekaitzsegurola/godot-tilemap-mcp/main/schemas/edit-recipe.schema.json",
+  "title": "godot-tilemap-mcp edit recipe",
+  "type": "object",
+  "required": ["scenePath", "operations"],
+  "additionalProperties": false,
+  "properties": {
+    "scenePath": { "type": "string", "minLength": 1 },
+    "projectPath": { "type": "string", "minLength": 1 },
+    "seed": { "type": "string" },
+    "expectedRevision": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "includePreview": { "type": "boolean" },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/set" },
+          { "$ref": "#/$defs/erase" },
+          { "$ref": "#/$defs/fill" },
+          { "$ref": "#/$defs/floodFill" },
+          { "$ref": "#/$defs/path" },
+          { "$ref": "#/$defs/scatter" },
+          { "$ref": "#/$defs/replace" },
+          { "$ref": "#/$defs/stamp" },
+          { "$ref": "#/$defs/copy" },
+          { "$ref": "#/$defs/terrainConnect" },
+          { "$ref": "#/$defs/terrainPath" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "integer", "minimum": -32768, "maximum": 32767 },
+        "y": { "type": "integer", "minimum": -32768, "maximum": 32767 }
+      }
+    },
+    "region": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "integer", "minimum": -32768, "maximum": 32767 },
+        "y": { "type": "integer", "minimum": -32768, "maximum": 32767 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "tileRef": {
+      "type": "object",
+      "required": ["sourceId", "atlasX", "atlasY"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceId": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "atlasX": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "atlasY": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "alternativeId": { "type": "integer", "minimum": 0, "maximum": 65535, "default": 0 }
+      }
+    },
+    "selector": {
+      "oneOf": [
+        { "$ref": "#/$defs/tileRef" },
+        { "type": "object", "required": ["alias"], "additionalProperties": false, "properties": { "alias": { "type": "string", "minLength": 1 } } },
+        { "type": "object", "required": ["brush"], "additionalProperties": false, "properties": { "brush": { "type": "string", "minLength": 1 } } }
+      ]
+    },
+    "shape": {
+      "oneOf": [
+        { "allOf": [{ "$ref": "#/$defs/region" }, { "type": "object", "properties": { "kind": { "const": "rect" } }, "required": ["kind"] }] },
+        { "allOf": [{ "$ref": "#/$defs/region" }, { "type": "object", "properties": { "kind": { "const": "ellipse" } }, "required": ["kind"] }] },
+        { "type": "object", "required": ["kind", "points"], "additionalProperties": false, "properties": { "kind": { "const": "polygon" }, "points": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/point" } } } },
+        { "type": "object", "required": ["kind", "cells"], "additionalProperties": false, "properties": { "kind": { "const": "cells" }, "cells": { "type": "array", "items": { "$ref": "#/$defs/point" } } } }
+      ]
+    },
+    "base": { "type": "object", "required": ["op", "layer"], "properties": { "op": { "type": "string" }, "layer": { "type": "string", "minLength": 1 } } },
+    "set": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "set" }, "cells": { "type": "array", "minItems": 1, "items": { "allOf": [{ "$ref": "#/$defs/point" }, { "type": "object", "required": ["tile"], "properties": { "tile": { "$ref": "#/$defs/selector" } } }] } }, "required": ["cells"] }] },
+    "erase": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "erase" }, "shape": { "$ref": "#/$defs/shape" } }, "required": ["shape"] }] },
+    "fill": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "fill" }, "shape": { "$ref": "#/$defs/shape" }, "tile": { "$ref": "#/$defs/selector" } }, "required": ["shape", "tile"] }] },
+    "floodFill": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "flood_fill" }, "start": { "$ref": "#/$defs/point" }, "tile": { "$ref": "#/$defs/selector" }, "maxCells": { "type": "integer", "minimum": 1 } }, "required": ["start", "tile"] }] },
+    "path": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "path" }, "points": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/point" } }, "tile": { "$ref": "#/$defs/selector" }, "width": { "type": "integer", "minimum": 1 }, "jitter": { "type": "number", "minimum": 0 } }, "required": ["points", "tile"] }] },
+    "scatter": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "scatter" }, "region": { "$ref": "#/$defs/region" }, "tile": { "$ref": "#/$defs/selector" }, "density": { "type": "number", "minimum": 0, "maximum": 1 }, "minDistance": { "type": "number", "minimum": 0 } }, "required": ["region", "tile", "density"] }] },
+    "replace": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "replace" }, "region": { "$ref": "#/$defs/region" }, "from": { "$ref": "#/$defs/selector" }, "to": { "$ref": "#/$defs/selector" } }, "required": ["from", "to"] }] },
+    "stamp": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "stamp" }, "origin": { "$ref": "#/$defs/point" }, "pattern": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "palette": { "type": "object", "additionalProperties": { "$ref": "#/$defs/selector" } } }, "required": ["origin", "pattern", "palette"] }] },
+    "copy": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "copy" }, "source": { "$ref": "#/$defs/region" }, "destination": { "$ref": "#/$defs/point" }, "flipX": { "type": "boolean" }, "flipY": { "type": "boolean" }, "rotate": { "enum": [0, 90, 180, 270] } }, "required": ["source", "destination"] }] },
+    "terrainConnect": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "terrain_connect" }, "cells": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/point" } }, "terrainSet": { "type": "integer", "minimum": 0 }, "terrain": { "type": "integer", "minimum": 0 }, "ignoreEmptyTerrains": { "type": "boolean" } }, "required": ["cells", "terrainSet", "terrain"] }] },
+    "terrainPath": { "allOf": [{ "$ref": "#/$defs/base" }, { "type": "object", "properties": { "op": { "const": "terrain_path" }, "points": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/point" } }, "terrainSet": { "type": "integer", "minimum": 0 }, "terrain": { "type": "integer", "minimum": 0 }, "ignoreEmptyTerrains": { "type": "boolean" } }, "required": ["points", "terrainSet", "terrain"] }] }
+  }
+}

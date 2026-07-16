@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Ekaitzsegurola/godot-tilemap-mcp/main/schemas/project-profile.schema.json",
+  "title": "godot-tilemap-mcp project profile",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "layer_roles": {
+      "type": "object",
+      "additionalProperties": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+    },
+    "protected_layers": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "tilesets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "aliases": { "type": "object", "additionalProperties": { "$ref": "#/$defs/tileRef" } },
+          "brushes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["tiles"],
+              "additionalProperties": false,
+              "properties": {
+                "tiles": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["tile"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "tile": { "$ref": "#/$defs/selector" },
+                      "weight": { "type": "number", "exclusiveMinimum": 0 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "walkability_layer_role": { "type": "string" },
+        "walk_mask_custom_data": { "type": "string" },
+        "force_block_custom_data": { "type": "string" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_cells_per_edit": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 50000 },
+        "max_render_pixels": { "type": "integer", "minimum": 1, "maximum": 100000000, "default": 16777216 }
+      }
+    },
+    "extensions": { "type": "object", "additionalProperties": true }
+  },
+  "$defs": {
+    "tileRef": {
+      "type": "object",
+      "required": ["source_id", "atlas_x", "atlas_y"],
+      "additionalProperties": false,
+      "properties": {
+        "source_id": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "atlas_x": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "atlas_y": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "alternative_id": { "type": "integer", "minimum": 0, "maximum": 65535, "default": 0 }
+      }
+    },
+    "selector": {
+      "oneOf": [
+        { "$ref": "#/$defs/tileRef" },
+        { "type": "object", "required": ["alias"], "additionalProperties": false, "properties": { "alias": { "type": "string", "minLength": 1 } } }
+      ]
+    }
+  }
+}
