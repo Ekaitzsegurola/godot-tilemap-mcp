@@ -5,7 +5,8 @@
  *
  * Tools:
  *   READ:  list_tilemaps, inspect_tileset, get_tilemap_info, read_tiles, render_tilemap
- *   WRITE: set_tiles, fill_rect, erase_tiles, erase_rect
+ *   ANALYZE: analyze_tilemap_patterns
+ *   WRITE: set_tiles, fill_rect, erase_tiles, erase_rect, paint_path, stamp_pattern
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -63,6 +64,96 @@ async function findFiles(dir, ext) {
     }
   }
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// Tile editing helpers
+// ---------------------------------------------------------------------------
+
+function cellKey(x, y) {
+  return `${x},${y}`;
+}
+
+async function loadLayerCells(scenePath, layerName) {
+  const fp = resolvePath(scenePath);
+  const parsed = await parseTscn(fp);
+  const layers = findTileMapLayers(parsed);
+  const layer = resolveLayer(layers, layerName);
+  const cells = layer.tileMapDataB64 ? decodeTileData(layer.tileMapDataB64) : [];
+  const cellMap = new Map();
+  for (const cell of cells) {
+    cellMap.set(cellKey(cell.x, cell.y), { ...cell });
+  }
+
+  return { fp, layer, cells, cellMap };
+}
+
+async function writeLayerCells(fp, layerName, cellMap) {
+  const allCells = Array.from(cellMap.values()).sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  const newB64 = encodeTileData(allCells);
+  await updateTileMapData(fp, layerName, newB64);
+  return allCells;
+}
+
+function tileFromArgs(args, prefix = '') {
+  return {
+    source_id: args[`${prefix}source_id`] ?? 0,
+    atlas_x: args[`${prefix}atlas_x`],
+    atlas_y: args[`${prefix}atlas_y`],
+    alt: args[`${prefix}alt`] ?? 0,
+  };
+}
+
+function putTile(cellMap, x, y, tile) {
+  cellMap.set(cellKey(x, y), {
+    x,
+    y,
+    source_id: tile.source_id,
+    atlas_x: tile.atlas_x,
+    atlas_y: tile.atlas_y,
+    alt: tile.alt ?? 0,
+  });
+}
+
+function seededRandom(seedText = 'level-design') {
+  let seed = 2166136261;
+  for (let i = 0; i < seedText.length; i++) {
+    seed ^= seedText.charCodeAt(i);
+    seed = Math.imul(seed, 16777619);
+  }
+
+  return () => {
+    seed += 0x6D2B79F5;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function normalizePoints(points) {
+  if (!Array.isArray(points) || points.length < 2) {
+    throw new Error('points must contain at least two {x,y} entries');
+  }
+
+  return points.map((p, index) => {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
+      throw new Error(`Invalid point at index ${index}; expected numeric x/y`);
+    }
+    return { x: Number(p.x), y: Number(p.y) };
+  });
+}
+
+function boundsForCells(cells) {
+  if (cells.length === 0) return null;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const c of cells) {
+    if (c.x < minX) minX = c.x;
+    if (c.x > maxX) maxX = c.x;
+    if (c.y < minY) minY = c.y;
+    if (c.y > maxY) maxY = c.y;
+  }
+  return { min_x: minX, max_x: maxX, min_y: minY, max_y: maxY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +345,208 @@ async function toolRenderTilemap(args) {
     bounds: { min_x: minX, max_x: maxX, min_y: minY, max_y: maxY },
     tile_count: cells.length,
   };
+}
+
+async function toolAnalyzeTilemapPatterns(args) {
+  const { cells } = await loadLayerCells(args.scene_path, args.layer_name);
+  let analysisCells = cells;
+  if (args.region) {
+    const r = args.region;
+    analysisCells = analysisCells.filter(c =>
+      c.x >= r.x && c.x < r.x + r.width &&
+      c.y >= r.y && c.y < r.y + r.height
+    );
+  }
+
+  const bounds = boundsForCells(analysisCells);
+  if (!bounds) {
+    return { tile_count: 0, bounds: null, warnings: ['No tiles in layer/region.'] };
+  }
+
+  const cellMap = new Map();
+  const distribution = new Map();
+  for (const c of analysisCells) {
+    cellMap.set(cellKey(c.x, c.y), c);
+    const key = `${c.source_id}:${c.atlas_x}:${c.atlas_y}:${c.alt}`;
+    distribution.set(key, (distribution.get(key) || 0) + 1);
+  }
+
+  const rows = [];
+  const columns = [];
+  let horizontalRuns = [];
+  let verticalRuns = [];
+  let diagonalStreaks = [];
+
+  for (let y = bounds.min_y; y <= bounds.max_y; y++) {
+    let row = '';
+    let current = null;
+    let runStart = bounds.min_x;
+    let runLen = 0;
+    for (let x = bounds.min_x; x <= bounds.max_x; x++) {
+      const c = cellMap.get(cellKey(x, y));
+      const value = c ? `${c.atlas_x}.${c.atlas_y}` : '..';
+      row += `${value}|`;
+      if (value !== current) {
+        if (current !== null && runLen >= 6) {
+          horizontalRuns.push({ tile: current, y, x: runStart, length: runLen });
+        }
+        current = value;
+        runStart = x;
+        runLen = 1;
+      } else {
+        runLen++;
+      }
+    }
+    if (current !== null && runLen >= 6) {
+      horizontalRuns.push({ tile: current, y, x: runStart, length: runLen });
+    }
+    rows.push(row);
+  }
+
+  for (let x = bounds.min_x; x <= bounds.max_x; x++) {
+    let column = '';
+    let current = null;
+    let runStart = bounds.min_y;
+    let runLen = 0;
+    for (let y = bounds.min_y; y <= bounds.max_y; y++) {
+      const c = cellMap.get(cellKey(x, y));
+      const value = c ? `${c.atlas_x}.${c.atlas_y}` : '..';
+      column += `${value}|`;
+      if (value !== current) {
+        if (current !== null && runLen >= 6) {
+          verticalRuns.push({ tile: current, x, y: runStart, length: runLen });
+        }
+        current = value;
+        runStart = y;
+        runLen = 1;
+      } else {
+        runLen++;
+      }
+    }
+    if (current !== null && runLen >= 6) {
+      verticalRuns.push({ tile: current, x, y: runStart, length: runLen });
+    }
+    columns.push(column);
+  }
+
+  const rowCounts = new Map();
+  rows.forEach(row => rowCounts.set(row, (rowCounts.get(row) || 0) + 1));
+  const repeatedRows = Array.from(rowCounts.values()).filter(count => count > 1).reduce((sum, count) => sum + count, 0);
+  const columnCounts = new Map();
+  columns.forEach(column => columnCounts.set(column, (columnCounts.get(column) || 0) + 1));
+  const repeatedColumns = Array.from(columnCounts.values()).filter(count => count > 1).reduce((sum, count) => sum + count, 0);
+
+  for (let d = bounds.min_x - bounds.max_y; d <= bounds.max_x - bounds.min_y; d++) {
+    let streak = [];
+    for (let y = bounds.min_y; y <= bounds.max_y; y++) {
+      const x = y + d;
+      const c = cellMap.get(cellKey(x, y));
+      const value = c ? `${c.atlas_x}.${c.atlas_y}` : '..';
+      if (value === '1.0') {
+        streak.push({ x, y });
+      } else {
+        if (streak.length >= 5) diagonalStreaks.push({ tile: '1.0', points: streak });
+        streak = [];
+      }
+    }
+    if (streak.length >= 5) diagonalStreaks.push({ tile: '1.0', points: streak });
+  }
+
+  horizontalRuns = horizontalRuns.sort((a, b) => b.length - a.length).slice(0, 20);
+  verticalRuns = verticalRuns.sort((a, b) => b.length - a.length).slice(0, 20);
+  diagonalStreaks = diagonalStreaks.sort((a, b) => b.points.length - a.points.length).slice(0, 20);
+
+  const warnings = [];
+  if (repeatedRows / rows.length > 0.3) warnings.push('High repeated-row ratio; map may read as patterned or stamped.');
+  if (repeatedColumns / columns.length > 0.3) warnings.push('High repeated-column ratio; map may read as patterned or stamped.');
+  if (diagonalStreaks.length > 0) warnings.push('Long diagonal streaks detected; replace with clustered/noisy accents.');
+  if (horizontalRuns.some(r => r.length >= Math.max(12, bounds.width * 0.4))) warnings.push('Very long horizontal runs detected; break with intersections, landmarks or edge variation.');
+  if (verticalRuns.some(r => r.length >= Math.max(10, bounds.height * 0.4))) warnings.push('Very long vertical runs detected; break with bends, pockets or landmarks.');
+
+  return {
+    tile_count: analysisCells.length,
+    bounds,
+    tile_distribution: Array.from(distribution.entries())
+      .map(([tile, count]) => ({ tile, count, ratio: Number((count / analysisCells.length).toFixed(4)) }))
+      .sort((a, b) => b.count - a.count),
+    repeated_rows: { count: repeatedRows, ratio: Number((repeatedRows / rows.length).toFixed(4)) },
+    repeated_columns: { count: repeatedColumns, ratio: Number((repeatedColumns / columns.length).toFixed(4)) },
+    longest_horizontal_runs: horizontalRuns,
+    longest_vertical_runs: verticalRuns,
+    diagonal_streaks: diagonalStreaks.map(s => ({ tile: s.tile, length: s.points.length, start: s.points[0], end: s.points[s.points.length - 1] })),
+    warnings,
+  };
+}
+
+async function toolPaintPath(args) {
+  const { fp, cellMap } = await loadLayerCells(args.scene_path, args.layer_name);
+  const points = normalizePoints(args.points);
+  const tile = tileFromArgs(args);
+  const width = Math.max(1, args.width ?? 1);
+  const radius = Math.max(0, Math.floor((width - 1) / 2));
+  const jitter = Math.max(0, args.jitter ?? 0);
+  const rng = seededRandom(args.seed ?? JSON.stringify(points));
+  const painted = new Set();
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
+    for (let step = 0; step <= steps; step++) {
+      const t = step / steps;
+      let cx = Math.round(a.x + dx * t);
+      let cy = Math.round(a.y + dy * t);
+      if (jitter > 0 && step !== 0 && step !== steps) {
+        cx += Math.round((rng() * 2 - 1) * jitter);
+        cy += Math.round((rng() * 2 - 1) * jitter);
+      }
+
+      for (let yy = cy - radius; yy <= cy + radius; yy++) {
+        for (let xx = cx - radius; xx <= cx + radius; xx++) {
+          const dist = Math.abs(xx - cx) + Math.abs(yy - cy);
+          if (dist > radius + (width % 2 === 0 ? 1 : 0)) continue;
+          putTile(cellMap, xx, yy, tile);
+          painted.add(cellKey(xx, yy));
+        }
+      }
+    }
+  }
+
+  const allCells = await writeLayerCells(fp, args.layer_name, cellMap);
+  return { success: true, total_tiles: allCells.length, tiles_painted: painted.size };
+}
+
+async function toolStampPattern(args) {
+  const { fp, cellMap } = await loadLayerCells(args.scene_path, args.layer_name);
+  if (!Array.isArray(args.pattern) || args.pattern.length === 0) {
+    throw new Error('pattern must be a non-empty array of strings');
+  }
+
+  const palette = args.palette || {};
+  const originX = args.x ?? 0;
+  const originY = args.y ?? 0;
+  let count = 0;
+  for (let row = 0; row < args.pattern.length; row++) {
+    const line = args.pattern[row];
+    for (let col = 0; col < line.length; col++) {
+      const ch = line[col];
+      if (ch === ' ' || ch === '.') continue;
+      const tile = palette[ch];
+      if (!tile) continue;
+      putTile(cellMap, originX + col, originY + row, {
+        source_id: tile.source_id ?? 0,
+        atlas_x: tile.atlas_x,
+        atlas_y: tile.atlas_y,
+        alt: tile.alt ?? 0,
+      });
+      count++;
+    }
+  }
+
+  const allCells = await writeLayerCells(fp, args.layer_name, cellMap);
+  return { success: true, total_tiles: allCells.length, tiles_stamped: count };
 }
 
 async function toolSetTiles(args) {
@@ -460,6 +753,29 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'analyze_tilemap_patterns',
+    description: 'Analyze tile distribution and repetition risks: repeated rows/columns, long runs, and diagonal streaks that make maps look procedurally stamped.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        region: {
+          type: 'object',
+          description: 'Optional rectangular region filter.',
+          properties: {
+            x: { type: 'integer' },
+            y: { type: 'integer' },
+            width: { type: 'integer' },
+            height: { type: 'integer' },
+          },
+          required: ['x', 'y', 'width', 'height'],
+        },
+      },
+      required: ['scene_path', 'layer_name'],
+    },
+  },
+  {
     name: 'set_tiles',
     description: 'Set (place or overwrite) one or more tiles on a TileMapLayer. Merges with existing data and writes back to the .tscn file.',
     inputSchema: {
@@ -505,6 +821,70 @@ const TOOL_DEFINITIONS = [
         alt: { type: 'integer', description: 'Alternative tile ID (default 0).' },
       },
       required: ['scene_path', 'layer_name', 'x', 'y', 'width', 'height', 'source_id', 'atlas_x', 'atlas_y'],
+    },
+  },
+  {
+    name: 'paint_path',
+    description: 'Paint an organic path/polyline between points on a TileMapLayer. Supports width, deterministic jitter, and a target tile.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        points: {
+          type: 'array',
+          description: 'Polyline control points in tile coordinates.',
+          items: {
+            type: 'object',
+            properties: {
+              x: { type: 'number' },
+              y: { type: 'number' },
+            },
+            required: ['x', 'y'],
+          },
+        },
+        width: { type: 'integer', description: 'Path width in tiles. Default 1.' },
+        jitter: { type: 'number', description: 'Max per-step random tile offset for less rigid paths. Default 0.' },
+        seed: { type: 'string', description: 'Optional deterministic seed.' },
+        source_id: { type: 'integer', description: 'TileSet source index.' },
+        atlas_x: { type: 'integer', description: 'Atlas X coordinate.' },
+        atlas_y: { type: 'integer', description: 'Atlas Y coordinate.' },
+        alt: { type: 'integer', description: 'Alternative tile ID (default 0).' },
+      },
+      required: ['scene_path', 'layer_name', 'points', 'source_id', 'atlas_x', 'atlas_y'],
+    },
+  },
+  {
+    name: 'stamp_pattern',
+    description: 'Stamp an ASCII pattern onto a TileMapLayer using a character-to-tile palette. Useful for plazas, ruins, groves, camps, and other authored landmarks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scene_path: { type: 'string', description: 'Path to the .tscn scene file.' },
+        layer_name: { type: 'string', description: 'Name of the TileMapLayer node.' },
+        x: { type: 'integer', description: 'Pattern origin X.' },
+        y: { type: 'integer', description: 'Pattern origin Y.' },
+        pattern: {
+          type: 'array',
+          description: 'Array of strings. Space/dot means transparent.',
+          items: { type: 'string' },
+        },
+        palette: {
+          type: 'object',
+          description: 'Map of character to tile object: { "P": {source_id, atlas_x, atlas_y, alt?} }.',
+          additionalProperties: {
+            type: 'object',
+            properties: {
+              source_id: { type: 'integer' },
+              atlas_x: { type: 'integer' },
+              atlas_y: { type: 'integer' },
+              alt: { type: 'integer' },
+            },
+            required: ['atlas_x', 'atlas_y'],
+          },
+        },
+      },
+      required: ['scene_path', 'layer_name', 'x', 'y', 'pattern', 'palette'],
     },
   },
   {
@@ -580,8 +960,11 @@ class GodotTilemapMCPServer {
           case 'get_tilemap_info': result = await toolGetTilemapInfo(args);     break;
           case 'read_tiles':       result = await toolReadTiles(args);          break;
           case 'render_tilemap':   result = await toolRenderTilemap(args);      break;
+          case 'analyze_tilemap_patterns': result = await toolAnalyzeTilemapPatterns(args); break;
           case 'set_tiles':        result = await toolSetTiles(args);           break;
           case 'fill_rect':        result = await toolFillRect(args);           break;
+          case 'paint_path':       result = await toolPaintPath(args);          break;
+          case 'stamp_pattern':    result = await toolStampPattern(args);       break;
           case 'erase_tiles':      result = await toolEraseTiles(args);         break;
           case 'erase_rect':       result = await toolEraseRect(args);          break;
           default:
